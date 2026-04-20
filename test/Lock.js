@@ -2,6 +2,10 @@ const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const { expect } = require("chai");
 
 describe("ChatApp", function () {
+  const ownerKey = "owner-public-key";
+  const friendKey = "friend-public-key";
+  const anotherKey = "another-public-key";
+
   async function deployFixture() {
     const [owner, friend, another] = await ethers.getSigners();
     const ChatApp = await ethers.getContractFactory("ChatApp");
@@ -11,22 +15,23 @@ describe("ChatApp", function () {
 
   it("creates account and resolves username", async function () {
     const { chatApp, owner } = await loadFixture(deployFixture);
-    await chatApp.connect(owner).createAccount("Owner");
+    await chatApp.connect(owner).createAccount("Owner", ownerKey);
 
     expect(await chatApp.checkUserExists(owner.address)).to.equal(true);
     expect(await chatApp.getUsername(owner.address)).to.equal("Owner");
+    expect(await chatApp.getEncryptionPublicKey(owner.address)).to.equal(ownerKey);
   });
 
   it("prevents duplicate account", async function () {
     const { chatApp } = await loadFixture(deployFixture);
-    await chatApp.createAccount("Owner");
-    await expect(chatApp.createAccount("Owner2")).to.be.revertedWith("user already exists");
+    await chatApp.createAccount("Owner", ownerKey);
+    await expect(chatApp.createAccount("Owner2", ownerKey)).to.be.revertedWith("user already exists");
   });
 
   it("adds friend bi-directionally", async function () {
     const { chatApp, owner, friend } = await loadFixture(deployFixture);
-    await chatApp.connect(owner).createAccount("Owner");
-    await chatApp.connect(friend).createAccount("Friend");
+    await chatApp.connect(owner).createAccount("Owner", ownerKey);
+    await chatApp.connect(friend).createAccount("Friend", friendKey);
 
     await chatApp.connect(owner).addFriend(friend.address, "Friend Alias");
 
@@ -41,7 +46,7 @@ describe("ChatApp", function () {
 
   it("prevents invalid friend additions", async function () {
     const { chatApp, owner, friend } = await loadFixture(deployFixture);
-    await chatApp.connect(owner).createAccount("Owner");
+    await chatApp.connect(owner).createAccount("Owner", ownerKey);
 
     await expect(chatApp.connect(owner).addFriend(owner.address, "Owner")).to.be.revertedWith(
       "users cannot add themselves"
@@ -54,8 +59,8 @@ describe("ChatApp", function () {
 
   it("sends and reads messages", async function () {
     const { chatApp, owner, friend } = await loadFixture(deployFixture);
-    await chatApp.connect(owner).createAccount("Owner");
-    await chatApp.connect(friend).createAccount("Friend");
+    await chatApp.connect(owner).createAccount("Owner", ownerKey);
+    await chatApp.connect(friend).createAccount("Friend", friendKey);
     await chatApp.connect(owner).addFriend(friend.address, "Friend");
 
     await chatApp.connect(owner).sendMessage(friend.address, "Hello");
@@ -69,8 +74,8 @@ describe("ChatApp", function () {
 
   it("prevents messaging without friendship", async function () {
     const { chatApp, owner, friend } = await loadFixture(deployFixture);
-    await chatApp.connect(owner).createAccount("Owner");
-    await chatApp.connect(friend).createAccount("Friend");
+    await chatApp.connect(owner).createAccount("Owner", ownerKey);
+    await chatApp.connect(friend).createAccount("Friend", friendKey);
 
     await expect(chatApp.connect(owner).sendMessage(friend.address, "Nope")).to.be.revertedWith(
       "friend connection not found"
@@ -79,13 +84,22 @@ describe("ChatApp", function () {
 
   it("tracks all users", async function () {
     const { chatApp, owner, friend, another } = await loadFixture(deployFixture);
-    await chatApp.connect(owner).createAccount("Owner");
-    await chatApp.connect(friend).createAccount("Friend");
-    await chatApp.connect(another).createAccount("Another");
+    await chatApp.connect(owner).createAccount("Owner", ownerKey);
+    await chatApp.connect(friend).createAccount("Friend", friendKey);
+    await chatApp.connect(another).createAccount("Another", anotherKey);
 
     const allUsers = await chatApp.getAllUsers();
     expect(allUsers).to.have.lengthOf(3);
     expect(allUsers[0].name).to.equal("Owner");
     expect(allUsers[2].accountAddress).to.equal(another.address);
+  });
+
+  it("updates encryption public key", async function () {
+    const { chatApp, owner } = await loadFixture(deployFixture);
+    await chatApp.connect(owner).createAccount("Owner", ownerKey);
+
+    await chatApp.connect(owner).updateEncryptionPublicKey("owner-public-key-v2");
+
+    expect(await chatApp.getEncryptionPublicKey(owner.address)).to.equal("owner-public-key-v2");
   });
 });

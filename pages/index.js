@@ -13,6 +13,7 @@ const formatTime = (timestamp) => {
 
 const HARDHAT_CHAIN_ID = 31337;
 const HARDHAT_CHAIN_ID_HEX = "0x7a69";
+const E2E_PAYLOAD_VERSION = 1;
 
 const toReadableError = (err) => {
   if (!err) {
@@ -26,11 +27,125 @@ const toReadableError = (err) => {
   return err.reason || err.message || "Unexpected error.";
 };
 
+const getStorageKey = (address, type) => `chatlink-e2e-${type}-${address.toLowerCase()}`;
+
+const arrayBufferToBase64 = (buffer) => {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary);
+};
+
+const base64ToArrayBuffer = (base64) => {
+  const binary = atob(base64);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return bytes.buffer;
+};
+
+const generateKeyPair = async () => {
+  const keyPair = await window.crypto.subtle.generateKey(
+    {
+      name: "RSA-OAEP",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["encrypt", "decrypt"]
+  );
+
+  const exportedPublic = await window.crypto.subtle.exportKey("jwk", keyPair.publicKey);
+  const exportedPrivate = await window.crypto.subtle.exportKey("jwk", keyPair.privateKey);
+  return {
+    publicKeyJwk: JSON.stringify(exportedPublic),
+    privateKeyJwk: JSON.stringify(exportedPrivate),
+  };
+};
+
+const ensureLocalKeyPair = async (walletAddress) => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const publicStorageKey = getStorageKey(walletAddress, "public");
+  const privateStorageKey = getStorageKey(walletAddress, "private");
+  const existingPublic = window.localStorage.getItem(publicStorageKey);
+  const existingPrivate = window.localStorage.getItem(privateStorageKey);
+  if (existingPublic && existingPrivate) {
+    return { publicKeyJwk: existingPublic, privateKeyJwk: existingPrivate };
+  }
+
+  const generated = await generateKeyPair();
+  window.localStorage.setItem(publicStorageKey, generated.publicKeyJwk);
+  window.localStorage.setItem(privateStorageKey, generated.privateKeyJwk);
+  return generated;
+};
+
+const importPublicKey = async (publicKeyJwkString) => {
+  const jwk = JSON.parse(publicKeyJwkString);
+  return window.crypto.subtle.importKey("jwk", jwk, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]);
+};
+
+const importPrivateKey = async (privateKeyJwkString) => {
+  const jwk = JSON.parse(privateKeyJwkString);
+  return window.crypto.subtle.importKey("jwk", jwk, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["decrypt"]);
+};
+
+const encryptTextForKey = async (plainText, publicKeyJwkString) => {
+  const publicKey = await importPublicKey(publicKeyJwkString);
+  const encoded = new TextEncoder().encode(plainText);
+  const encrypted = await window.crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, encoded);
+  return arrayBufferToBase64(encrypted);
+};
+
+const decryptTextWithKey = async (encryptedBase64, privateKeyJwkString) => {
+  const privateKey = await importPrivateKey(privateKeyJwkString);
+  const decrypted = await window.crypto.subtle.decrypt({ name: "RSA-OAEP" }, privateKey, base64ToArrayBuffer(encryptedBase64));
+  return new TextDecoder().decode(decrypted);
+};
+
+const createEncryptedPayload = async ({ message, senderAddress, receiverAddress, senderPublicKeyJwk, receiverPublicKeyJwk }) => {
+  const cipherForSender = await encryptTextForKey(message, senderPublicKeyJwk);
+  const cipherForReceiver = await encryptTextForKey(message, receiverPublicKeyJwk);
+
+  return JSON.stringify({
+    v: E2E_PAYLOAD_VERSION,
+    t: "e2e",
+    from: senderAddress,
+    to: receiverAddress,
+    senderCipher: cipherForSender,
+    receiverCipher: cipherForReceiver,
+  });
+};
+
+const tryParsePayload = (message) => {
+  try {
+    const parsed = JSON.parse(message);
+    if (parsed?.t === "e2e" && parsed?.v === E2E_PAYLOAD_VERSION) {
+      return parsed;
+    }
+    return null;
+  } catch (error) {
+    return null;
+  }
+};
+
+const normalizeJwkString = (jwkString) => {
+  try {
+    return JSON.stringify(JSON.parse(jwkString));
+  } catch (error) {
+    return jwkString;
+  }
+};
+
 export default function ChatApp() {
   const [provider, setProvider] = useState(null);
   const [walletAddress, setWalletAddress] = useState("");
   const [status, setStatus] = useState("Connect wallet to start.");
   const [error, setError] = useState("");
+  const [encryptionWarning, setEncryptionWarning] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [accountName, setAccountName] = useState("");
   const [nameInput, setNameInput] = useState("");
@@ -44,6 +159,12 @@ export default function ChatApp() {
 
   const getContract = (signerOrProvider) => new ethers.Contract(CHAT_APP_ADDRESS, CHAT_APP_ABI, signerOrProvider);
   const toReader = (signerOrProvider) => (typeof signerOrProvider?.getSigner === "function" ? signerOrProvider.getSigner() : signerOrProvider);
+  const getPrivateKeyJwk = (address) => {
+    if (typeof window === "undefined" || !address) {
+      return "";
+    }
+    return window.localStorage.getItem(getStorageKey(address, "private")) || "";
+  };
 
   const ensureHardhatNetwork = async () => {
     if (typeof window === "undefined" || !window.ethereum) {
@@ -113,11 +234,34 @@ export default function ChatApp() {
 
     const contract = getContract(toReader(signerOrProvider));
     const chainMessages = await contract.readMessages(friendAddress);
-    const normalized = chainMessages.map((item) => ({
-      text: item.message,
-      side: item.sender.toLowerCase() === walletAddress.toLowerCase() ? "right" : "left",
-      meta: `${toShortAddress(item.sender)} ${formatTime(item.timestamp)}`,
-    }));
+    const privateKeyJwk = getPrivateKeyJwk(walletAddress);
+    const normalized = await Promise.all(
+      chainMessages.map(async (item) => {
+        let messageText = item.message;
+        const payload = tryParsePayload(item.message);
+
+        if (payload) {
+          if (!privateKeyJwk) {
+            messageText = "[Encrypted - key unavailable on this device]";
+          } else {
+            const targetCipher = item.sender.toLowerCase() === walletAddress.toLowerCase() ? payload.senderCipher : payload.receiverCipher;
+            if (targetCipher) {
+              try {
+                messageText = await decryptTextWithKey(targetCipher, privateKeyJwk);
+              } catch (decryptError) {
+                messageText = "[Decryption failed - use original device]";
+              }
+            }
+          }
+        }
+
+        return {
+          text: messageText,
+          side: item.sender.toLowerCase() === walletAddress.toLowerCase() ? "right" : "left",
+          meta: `${toShortAddress(item.sender)} ${formatTime(item.timestamp)}`,
+        };
+      })
+    );
 
     setMessages(normalized);
   };
@@ -150,14 +294,27 @@ export default function ChatApp() {
 
     const contract = getContract(signerOrProvider);
     const exists = await contract.checkUserExists(account);
+    const localKeys = await ensureLocalKeyPair(account);
 
     if (!exists) {
       setAccountName("");
       setStatus("Create your account name to start chatting.");
+      setEncryptionWarning("");
       setFriends([]);
       setSelectedFriendAddress("");
       setMessages([]);
       return;
+    }
+
+    try {
+      const onChainPublicKey = await contract.getEncryptionPublicKey(account);
+      if (localKeys?.publicKeyJwk && normalizeJwkString(onChainPublicKey) !== normalizeJwkString(localKeys.publicKeyJwk)) {
+        setEncryptionWarning("Local private key does not match on-chain public key. Old messages cannot be decrypted on this device.");
+      } else {
+        setEncryptionWarning("");
+      }
+    } catch (publicKeyError) {
+      setEncryptionWarning("No encryption public key found on-chain for this account. Update your encryption key to use encrypted messaging.");
     }
 
     const username = await contract.getUsername(account);
@@ -206,7 +363,8 @@ export default function ChatApp() {
       setError("");
       const signer = provider.getSigner();
       const contract = getContract(signer);
-      const tx = await contract.createAccount(cleanName);
+      const keys = await ensureLocalKeyPair(walletAddress);
+      const tx = await contract.createAccount(cleanName, keys.publicKeyJwk);
       await tx.wait();
       setNameInput("");
       await loadProfile(provider, walletAddress);
@@ -254,7 +412,22 @@ export default function ChatApp() {
       setError("");
       const signer = provider.getSigner();
       const contract = getContract(signer);
-      const tx = await contract.sendMessage(selectedFriendAddress, cleanText);
+      const senderPublicKey = await contract.getEncryptionPublicKey(walletAddress);
+      const receiverPublicKey = await contract.getEncryptionPublicKey(selectedFriendAddress);
+
+      if (!senderPublicKey || !receiverPublicKey) {
+        throw new Error(`Missing encryption public key for ${!senderPublicKey ? "sender" : "receiver"}. Both users must have created accounts with encryption keys to send messages.`);
+      }
+
+      const encryptedPayload = await createEncryptedPayload({
+        message: cleanText,
+        senderAddress: walletAddress,
+        receiverAddress: selectedFriendAddress,
+        senderPublicKeyJwk: senderPublicKey,
+        receiverPublicKeyJwk: receiverPublicKey,
+      });
+
+      const tx = await contract.sendMessage(selectedFriendAddress, encryptedPayload);
       await tx.wait();
       setComposerText("");
       await loadMessages(selectedFriendAddress, provider);
@@ -291,6 +464,7 @@ export default function ChatApp() {
       const nextAccount = accounts[0] || "";
       setWalletAddress(nextAccount);
       setAccountName("");
+      setEncryptionWarning("");
       setFriends([]);
       setMessages([]);
       setSelectedFriendAddress("");
@@ -338,6 +512,7 @@ export default function ChatApp() {
 
             <p className={styles.statusText}>{status}</p>
             {error ? <p className={styles.walletError}>{error}</p> : null}
+            {encryptionWarning ? <p className={styles.walletError}>{encryptionWarning}</p> : null}
 
             {!walletAddress ? (
               <button className={styles.actionBtn} onClick={connectWallet} disabled={isBusy}>
