@@ -65,6 +65,7 @@ contract ChatApp {
 
     function getEncryptionPublicKey(address pubkey) external view returns (string memory) {
         require(checkUserExists(pubkey), "user is not registered");
+        require(bytes(userList[pubkey].encryptionPublicKey).length > 0, "encryption key is not set");
 
         return userList[pubkey].encryptionPublicKey;
     }

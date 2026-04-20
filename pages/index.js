@@ -40,10 +40,7 @@ const arrayBufferToBase64 = (buffer) => {
 
 const base64ToArrayBuffer = (base64) => {
   const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
   return bytes.buffer;
 };
 
@@ -132,6 +129,14 @@ const tryParsePayload = (message) => {
     return null;
   } catch (error) {
     return null;
+  }
+};
+
+const normalizeJwkString = (jwkString) => {
+  try {
+    return JSON.stringify(JSON.parse(jwkString));
+  } catch (error) {
+    return jwkString;
   }
 };
 
@@ -237,14 +242,14 @@ export default function ChatApp() {
 
         if (payload) {
           if (!privateKeyJwk) {
-            messageText = "[Missing local private key]";
+            messageText = "[Encrypted - key unavailable on this device]";
           } else {
             const targetCipher = item.sender.toLowerCase() === walletAddress.toLowerCase() ? payload.senderCipher : payload.receiverCipher;
             if (targetCipher) {
               try {
                 messageText = await decryptTextWithKey(targetCipher, privateKeyJwk);
               } catch (decryptError) {
-                messageText = "[Unable to decrypt message]";
+                messageText = "[Decryption failed - use original device]";
               }
             }
           }
@@ -301,13 +306,15 @@ export default function ChatApp() {
       return;
     }
 
-    const onChainPublicKey = await contract.getEncryptionPublicKey(account);
-    if (!onChainPublicKey) {
-      setEncryptionWarning("No encryption public key found on-chain for this account.");
-    } else if (localKeys?.publicKeyJwk && onChainPublicKey !== localKeys.publicKeyJwk) {
-      setEncryptionWarning("Local private key does not match on-chain public key. Old encrypted messages may be unreadable.");
-    } else {
-      setEncryptionWarning("");
+    try {
+      const onChainPublicKey = await contract.getEncryptionPublicKey(account);
+      if (localKeys?.publicKeyJwk && normalizeJwkString(onChainPublicKey) !== normalizeJwkString(localKeys.publicKeyJwk)) {
+        setEncryptionWarning("Local private key does not match on-chain public key. Old messages cannot be decrypted on this device.");
+      } else {
+        setEncryptionWarning("");
+      }
+    } catch (publicKeyError) {
+      setEncryptionWarning("No encryption public key found on-chain for this account. Update your encryption key to use encrypted messaging.");
     }
 
     const username = await contract.getUsername(account);
@@ -409,7 +416,7 @@ export default function ChatApp() {
       const receiverPublicKey = await contract.getEncryptionPublicKey(selectedFriendAddress);
 
       if (!senderPublicKey || !receiverPublicKey) {
-        throw new Error("Missing encryption public key for sender or recipient.");
+        throw new Error(`Missing encryption public key for ${!senderPublicKey ? "sender" : "receiver"}. Both users must have created accounts with encryption keys to send messages.`);
       }
 
       const encryptedPayload = await createEncryptedPayload({
