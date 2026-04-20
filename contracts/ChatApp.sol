@@ -4,6 +4,7 @@ pragma solidity ^0.8.18;
 contract ChatApp {
     struct User {
         string name;
+        string encryptionPublicKey;
         Friend[] friendList;
     }
 
@@ -27,28 +28,45 @@ contract ChatApp {
     mapping(bytes32 => Message[]) private allMessages;
     AllUsers[] private allUsers;
 
-    event UserCreated(address indexed account, string name);
+    event UserCreated(address indexed account, string name, string encryptionPublicKey);
     event FriendAdded(address indexed account, address indexed friend, string friendName);
     event MessageSent(address indexed sender, address indexed receiver, string message, uint256 timestamp);
+    event EncryptionPublicKeyUpdated(address indexed account, string encryptionPublicKey);
 
     function checkUserExists(address pubkey) public view returns (bool) {
         return bytes(userList[pubkey].name).length > 0;
     }
 
-    function createAccount(string calldata name) external {
+    function createAccount(string calldata name, string calldata encryptionPublicKey) external {
         require(checkUserExists(msg.sender) == false, "user already exists");
         require(bytes(name).length > 0, "username cannot be empty");
+        require(bytes(encryptionPublicKey).length > 0, "encryption key cannot be empty");
 
         userList[msg.sender].name = name;
+        userList[msg.sender].encryptionPublicKey = encryptionPublicKey;
         allUsers.push(AllUsers(name, msg.sender));
 
-        emit UserCreated(msg.sender, name);
+        emit UserCreated(msg.sender, name, encryptionPublicKey);
+    }
+
+    function updateEncryptionPublicKey(string calldata encryptionPublicKey) external {
+        require(checkUserExists(msg.sender), "create an account first");
+        require(bytes(encryptionPublicKey).length > 0, "encryption key cannot be empty");
+
+        userList[msg.sender].encryptionPublicKey = encryptionPublicKey;
+        emit EncryptionPublicKeyUpdated(msg.sender, encryptionPublicKey);
     }
 
     function getUsername(address pubkey) external view returns (string memory) {
         require(checkUserExists(pubkey), "user is not registered");
 
         return userList[pubkey].name;
+    }
+
+    function getEncryptionPublicKey(address pubkey) external view returns (string memory) {
+        require(checkUserExists(pubkey), "user is not registered");
+
+        return userList[pubkey].encryptionPublicKey;
     }
 
     function addFriend(address friendKey, string calldata friendName) external {

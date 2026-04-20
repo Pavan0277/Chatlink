@@ -23,10 +23,17 @@ export const CHAT_APP_ABI = [
     "type": "function"
   },
   {
-    "inputs": [{ "internalType": "string", "name": "name", "type": "string" }],
+    "inputs": [{ "internalType": "string", "name": "name", "type": "string" }, { "internalType": "string", "name": "encryptionPublicKey", "type": "string" }],
     "name": "createAccount",
     "outputs": [],
     "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "address", "name": "pubkey", "type": "address" }],
+    "name": "getEncryptionPublicKey",
+    "outputs": [{ "internalType": "string", "name": "", "type": "string" }],
+    "stateMutability": "view",
     "type": "function"
   },
   {
@@ -91,6 +98,13 @@ export const CHAT_APP_ABI = [
   {
     "inputs": [{ "internalType": "address", "name": "friendKey", "type": "address" }, { "internalType": "string", "name": "newMessage", "type": "string" }],
     "name": "sendMessage",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "string", "name": "encryptionPublicKey", "type": "string" }],
+    "name": "updateEncryptionPublicKey",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"

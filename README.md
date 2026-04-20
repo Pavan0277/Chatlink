@@ -7,7 +7,8 @@ Decentralized chat app using Next.js, Hardhat, Solidity, Ethers.js, and MetaMask
 - Wallet connect via MetaMask
 - On-chain account creation
 - Add friend by wallet address
-- Send and read messages stored on-chain
+- End-to-end encrypted messages using per-user public/private key pairs
+- Send and read encrypted messages stored on-chain
 
 ## Prerequisites
 
@@ -62,7 +63,7 @@ Open http://localhost:3000
 ## Usage Flow
 
 1. Connect wallet.
-2. Create account username.
+2. Create account username (app generates a local private key and stores your public key on-chain).
 3. Add another registered wallet as friend.
 4. Select friend and send messages.
 
